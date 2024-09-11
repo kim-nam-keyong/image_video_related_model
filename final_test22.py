@@ -66,11 +66,14 @@ else:
     print("CUDA is not available.")
 
 
-# In[4]:
+# In[8]:
 
 
-df_target = pd.read_csv("load_npy_img.csv",index_col=0)
-df_target
+# df_target = pd.read_csv("load_npy_img.csv",index_col=0)
+# df_target
+
+df = pd.read_csv("./train_data.csv")
+df
 
 
 # #### 이미지 데이터 전처리 efficientnet을 사용하여 특징벡터 추출 후 , DF에 따로 저장하여 load하기 편하게 사용 
@@ -298,26 +301,17 @@ plt.xlim(left=-50)
 plt.show()
 
 
-# In[5]:
+# In[12]:
 
 
-import pandas as pd
-df_video = pd.read_csv("merged_video.csv")
-df_video['occupant_id'].value_counts()  # occupant1? 1명의 데이터만 존재함. 
-
-df_video
-
-
-# In[117]:
-
-
+# 영상데이터 매핑
 import os
 import glob
 import json
 import pandas as pd
 
 # df_video DataFrame 생성
-df_video = pd.read_csv("./df_video.csv")
+df_video = pd.read_csv("./df_frame.csv")
 
 # df_video의 내용을 확인
 print("df_video 내용 확인:")
@@ -340,7 +334,7 @@ for json_file in json_files:
         video_file_pattern = f"\\{video_id}\\{scene_id}\\video\\{scene_id}.mp4"
         
         # 패턴과 일치하는지 확인
-        matching_files = df_video[df_video['video_file'].str.contains(video_file_pattern, regex=False)]
+        matching_files = df_video[df_video['video_files'].str.contains(video_file_pattern, regex=False)]
         if not matching_files.empty:
             print(f"Matching files found for video_id {video_id} and scene_id {scene_id}:")
             print(matching_files)
@@ -350,7 +344,7 @@ for json_file in json_files:
                     'scene_id': scene_id,
                     'category_name': category_name,
                     'occupant_id': occupant_id,
-                    'video_file': matching_files.iloc[0]['video_file']  # df_video의 video_file 값을 사용
+                    'video_file': matching_files.iloc[0]['video_files']  # df_video의 video_file 값을 사용
                 })
         else:
             print(f"No matching files found for video_id {video_id} and scene_id {scene_id} with pattern {video_file_pattern}")
@@ -360,15 +354,28 @@ print("Result DataFrame:")
 print(result_df)
 
 
-# In[124]:
+# In[17]:
+
+
+df_video.rename(columns={'video_files':'video_file'}, inplace=True)
+
+
+# In[32]:
 
 
 #pd.concat([df_video, result_df],axis=1)  #53685
-
-#result_df['video_file'] = result_df['video_file'].apply(lambda x: './01.데이터/1.Training/원천데이터/TS2' + x)
-
-
 merged_df = pd.merge(df_video, result_df, on='video_file', how='left')
+merged_df = merged_df[['video_file','frame_count','occupant_id','category_name']]
+#merged_df.to_csv("merged_video.csv",index=False)
+merged_df['category_name'].unique()
+
+
+label = {'졸음운전':0, '음주운전':0, '물건찾기':0, '통화':0, '휴대폰조작':0, '차량제어':1, '운전자폭행':1}
+
+merged_df['label'] = merged_df['category_name'].map(label)
+merged_df['label'].value_counts()
+
+
 merged_df.to_csv("merged_video.csv",index=False)
 
 
@@ -501,12 +508,12 @@ X_img = np.array(train_final['features'].apply(eval).tolist())
 print("Data preprocessing time: {:.2f} seconds".format(time.time() - start_time))
 
 
-# In[1]:
+# In[35]:
 
 
 #np.savetxt('X_img.csv', X_img, delimiter=',')
 import pandas as pd
-train_final = pd.read_csv("./train_final.csv")
+train_final = pd.read_csv("./train_data.csv")
 
 
 # In[2]:
@@ -1831,15 +1838,23 @@ print(f'Best Validation Accuracy: {best_val_accuracy}%')
 
 # ### 영상데이터만으로 전처리 후 모델링 
 
-# In[91]:
+# In[3]:
 
 
-df_video = pd.read_csv("df_video_labeled.csv")
-#df_video.loc[df_video['frame_count']==0]  # 프레임 0이 존재하지 않는데?
-df_video.head()
+import pandas as pd
+df_video = pd.read_csv("merged_video.csv")
+df_video
 
 
-# In[52]:
+# In[4]:
+
+
+#df_video['frame_count'].describe()  # mean 179, std 124, 75% 215, max 3006
+df_video = df_video.loc[df_video['frame_count']!=0].reset_index(drop=True)
+df_video
+
+
+# In[5]:
 
 
 import matplotlib.pyplot as plt
@@ -1868,111 +1883,21 @@ plt.ylabel('비디오 수')
 plt.show()
 
 
-# In[80]:
+# In[6]:
 
 
-label = {'졸음운전':0, '음주운전':0, '물건찾기':0 , '통화':0, '휴대폰조작':0, '차량제어':1, '운전자폭행':0}
-df_video['label'] = df_video['category_name'].map(label)
-df_video['label'].value_counts()
-df_video
+df_1 = df_video.loc[df_video['category_name']=='졸음운전'].sample(2000)
+df_2 = df_video.loc[df_video['category_name']=='음주운전'].sample(2000)
+df_3 = df_video.loc[df_video['category_name']=='물건찾기'].sample(2000)
+df_4 = df_video.loc[df_video['category_name']=='통화'].sample(2000)
+df_5 = df_video.loc[df_video['category_name']=='휴대폰조작'].sample(2000)
+df_6 = df_video.loc[df_video['category_name']=='차량제어'].sample(2000)
 
-df_video.to_csv('df_video_labeld.csv', index=False)
-
-
-# In[94]:
-
-
-df_sample = df_video.head(100)
+df_sample = pd.concat([df_1, df_2, df_3, df_4, df_5, df_6]).reset_index(drop=True)
 df_sample
 
 
-# In[111]:
-
-
-# import cv2
-# import numpy as np
-# import torch
-# from PIL import Image
-# import torchvision.transforms as transforms
-# import pandas as pd
-# from tqdm import tqdm
-
-# # 이미지 전처리 정의
-# transform = transforms.Compose([
-#     transforms.Resize((224, 224)),
-#     transforms.ToTensor(),
-#     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-# ])
-
-# def preprocess_frame(frame):
-#     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-#     img = transform(img)
-#     return img
-
-# def average_frames(frames):
-#     frames_array = np.array([frame.numpy() for frame in frames])
-#     avg_frame = np.mean(frames_array, axis=0)
-#     avg_frame_tensor = torch.tensor(avg_frame, dtype=torch.float32)
-#     return avg_frame_tensor
-
-# def adjust_frame_sequence(frames, target_length):
-#     num_frames = len(frames)
-
-#     if num_frames > target_length:
-#         group_size = num_frames // target_length
-#         averaged_frames = []
-#         for i in range(0, num_frames, group_size):
-#             group = frames[i:i + group_size]
-#             avg_frame = average_frames(group)
-#             averaged_frames.append(avg_frame)
-#         frames = averaged_frames[:target_length]
-    
-#     elif num_frames < target_length:
-#         repeat_count = target_length // num_frames
-#         remainder = target_length % num_frames
-#         frames = frames * repeat_count + frames[:remainder]
-    
-#     return frames
-
-# def extract_and_preprocess_frames(video_path, target_length):
-#     cap = cv2.VideoCapture(video_path)
-#     if not cap.isOpened():
-#         raise FileNotFoundError(f"Cannot open video file: {video_path}")
-    
-#     frames = []
-
-#     while True:
-#         ret, frame = cap.read()
-#         if not ret:
-#             break 
-#         frames.append(preprocess_frame(frame))
-#     cap.release()
-
-#     frames = adjust_frame_sequence(frames, target_length)
-#     return torch.stack(frames)
-
-
-# # 고정할 프레임 수 설정 (중간값 사용)
-# target_length = int(df_sample['frame_count'].median())
-
-# # tqdm을 사용하여 진행 상황 표시
-# processed_frames = []
-# for video_file in tqdm(df_sample['video_file'].head(100), desc="Processing videos"):
-#     try:
-#         processed_frames.append(extract_and_preprocess_frames(video_file, target_length))
-#     except FileNotFoundError as e:
-#         print(e)
-#         processed_frames.append(None)  # 처리할 수 없는 비디오 파일에 대해 None 추가
-
-# # 결과를 데이터프레임에 저장
-# df_sample['processed_frames'] = processed_frames
-
-# # 결과 출력
-# df_sample
-# #Unable to allocate 184. MiB for an array with shape (160, 3, 224, 224) and data type object
-
-
-# In[114]:
+# In[8]:
 
 
 import os
@@ -1983,6 +1908,7 @@ from PIL import Image
 import torchvision.transforms as transforms
 import pandas as pd
 from tqdm import tqdm
+import h5py
 
 # GPU 메모리 캐시 비우기
 torch.cuda.empty_cache()
@@ -1990,8 +1916,7 @@ torch.cuda.empty_cache()
 # 이미지 전처리 정의
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.ToTensor()
 ])
 
 def preprocess_frame(frame):
@@ -2041,6 +1966,15 @@ def extract_and_preprocess_frames(video_path, target_length):
     frames = adjust_frame_sequence(frames, target_length)
     return torch.stack(frames)
 
+def save_to_hdf5(frames, output_path):
+    with h5py.File(output_path, 'w') as f:
+        if frames is not None:
+            f.create_dataset('frames', data=frames.cpu().numpy(), compression='gzip')
+        else:
+            # 빈 데이터셋 생성
+            f.create_dataset('frames', shape=(0, 3, 224, 224), dtype='float32')
+
+
 # 고정할 프레임 수 설정 (중간값 사용)
 target_length = int(df_sample['frame_count'].median())
 
@@ -2049,39 +1983,50 @@ output_dir = 'processed_frames'
 os.makedirs(output_dir, exist_ok=True)
 
 # tqdm을 사용하여 진행 상황 표시
-for idx, video_file in tqdm(enumerate(df_video['video_file']), desc="Processing videos", total=len(df_video['video_file'])):
+for idx, video_file in tqdm(enumerate(df_sample['video_file']), desc="Processing videos", total=len(df_sample['video_file'])):
     try:
         frames = extract_and_preprocess_frames(video_file, target_length)
-        torch.save(frames, os.path.join(output_dir, f'frames_{idx}.pt'))
+        save_to_hdf5(frames, os.path.join(output_dir, f'frames_{idx}.h5'))
     except FileNotFoundError as e:
         print(e)
-        torch.save(None, os.path.join(output_dir, f'frames_{idx}.pt'))  # 처리할 수 없는 비디오 파일에 대해 None 저장
+        # 빈 데이터셋 저장
+        save_to_hdf5(None, os.path.join(output_dir, f'frames_{idx}.h5'))
 
 # 결과를 데이터프레임에 저장
-df_video['processed_frames'] = [os.path.join(output_dir, f'frames_{idx}.pt') for idx in range(len(df_video['video_file']))]
+df_sample['processed_frames'] = [os.path.join(output_dir, f'frames_{idx}.h5') for idx in range(len(df_sample['video_file']))]
 
 # 결과 출력
-df_video.to_csv("get_tensor.csv", index=False)
-df_video.head()
+df_sample.head()
 
 
-# In[101]:
+# In[10]:
 
 
-df_sample
+df_sample.to_csv("get_tensor.csv", index=False)
 
 
-# In[103]:
+# In[18]:
 
 
+df = pd.read_csv("get_tensor.csv")
+df['frame_count'].describe()
+
+
+# In[17]:
+
+
+import h5py
+import numpy as np
 import torch
 
-# 저장된 텐서 파일을 로드하는 함수
+# 저장된 HDF5 파일을 로드하는 함수
 def load_processed_frames(file_path):
-    return torch.load(file_path)
+    with h5py.File(file_path, 'r') as f:
+        frames = f['frames'][:]
+    return torch.tensor(frames)
 
 # 예제 파일 경로
-file_path = 'processed_frames/frames_0.pt'
+file_path = 'processed_frames/frames_0.h5'
 
 # 텐서 로드
 tensor = load_processed_frames(file_path)
@@ -2092,32 +2037,41 @@ print(f"Tensor shape: {tensor.shape}")
 # 텐서 내용 확인 (일부만 출력)
 print(tensor)
 
-df_sample['frame_count'].median()
+
+# In[21]:
 
 
-# In[110]:
-
-
-import torch
-from PIL import Image
-import torchvision.transforms as transforms
+import h5py
 import numpy as np
+import torch 
+from PIL import Image
+import matplotlib.pyplot as plt
 
-# 저장된 텐서 파일을 로드하는 함수
 def load_processed_frames(file_path):
-    return torch.load(file_path)
+    with h5py.File(file_path, 'r') as f:
+        frames = f['frames'][:]
+    return torch.tensor(frames)
 
-# 텐서에서 이미지로 변환하는 함수
-def tensor_to_image(tensor, index):
-    # 텐서에서 특정 프레임을 선택
-    frame_tensor = tensor[index]
-    # 텐서를 PIL 이미지로 변환
-    transform = transforms.ToPILImage()
-    img = transform(frame_tensor)
+def tensor_to_image(tensor):
+    # 텐서를 numpy 배열로 변환
+    np_array = tensor.numpy()
+    
+    # 텐서의 차원이 4차원 (배치, 채널, 높이, 너비)인 경우 첫 번째 배치 선택
+    if len(np_array.shape) == 4:
+        np_array = np_array[0]
+    
+    # 채널 순서 변경 (C, H, W) -> (H, W, C)
+    np_array = np.transpose(np_array, (1, 2, 0))
+    
+    # 값의 범위를 [0, 255]로 변환
+    np_array = (np_array * 255).astype(np.uint8)
+    
+    # numpy 배열을 이미지로 변환
+    img = Image.fromarray(np_array)
     return img
 
 # 예제 파일 경로
-file_path = 'processed_frames/frames_98.pt'
+file_path = 'processed_frames/frames_0.h5'
 
 # 텐서 로드
 tensor = load_processed_frames(file_path)
@@ -2125,15 +2079,12 @@ tensor = load_processed_frames(file_path)
 # 텐서 형태 확인
 print(f"Tensor shape: {tensor.shape}")
 
-# 텐서의 첫 번째 프레임을 이미지로 변환
-img = tensor_to_image(tensor, 10)
+# 텐서 내용 확인 (일부만 출력)
+print(tensor)
 
-# 이미지 출력
-img.show()
+# 텐서를 이미지로 변환
+img = tensor_to_image(tensor)
 
-
-# In[ ]:
-
-
-
+# 이미지 시각화
+plt.imshow(img)
 
