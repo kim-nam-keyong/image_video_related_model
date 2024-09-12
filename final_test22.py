@@ -1999,45 +1999,6 @@ df_sample['processed_frames'] = [os.path.join(output_dir, f'frames_{idx}.h5') fo
 df_sample.head()
 
 
-# In[10]:
-
-
-df_sample.to_csv("get_tensor.csv", index=False)
-
-
-# In[18]:
-
-
-df = pd.read_csv("get_tensor.csv")
-df['frame_count'].describe()
-
-
-# In[17]:
-
-
-import h5py
-import numpy as np
-import torch
-
-# 저장된 HDF5 파일을 로드하는 함수
-def load_processed_frames(file_path):
-    with h5py.File(file_path, 'r') as f:
-        frames = f['frames'][:]
-    return torch.tensor(frames)
-
-# 예제 파일 경로
-file_path = 'processed_frames/frames_0.h5'
-
-# 텐서 로드
-tensor = load_processed_frames(file_path)
-
-# 텐서 형태 확인
-print(f"Tensor shape: {tensor.shape}")
-
-# 텐서 내용 확인 (일부만 출력)
-print(tensor)
-
-
 # In[21]:
 
 
@@ -2070,7 +2031,7 @@ def tensor_to_image(tensor):
     img = Image.fromarray(np_array)
     return img
 
-# 예제 파일 경로
+# 파일 경로
 file_path = 'processed_frames/frames_0.h5'
 
 # 텐서 로드
@@ -2087,4 +2048,215 @@ img = tensor_to_image(tensor)
 
 # 이미지 시각화
 plt.imshow(img)
+
+
+# #### Attention + CNN + LSTM 
+
+# In[1]:
+
+
+from sklearn.preprocessing import OneHotEncoder,LabelEncoder
+from sklearn.model_selection import train_test_split 
+import pandas as pd
+encoder = OneHotEncoder()
+#category_encoded = encoder.fit_transform(df[['category_name']]).toarray()
+#category_encoded_df = pd.DataFrame(category_encoded, columns=encoder.get_feature_names_out(['category_name']))
+#video_train = pd.concat([df, category_encoded_df], axis=1)
+#filtered_df = video_train.loc[:, ~video_train.columns.str.contains('video_file|frame_count|occupant_id|label')]
+
+X_video = pd.read_csv("./train_video.csv")
+X_video
+
+
+# In[4]:
+
+
+import torch 
+import torch.nn as nn 
+import torch.nn.functional as F 
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+import h5py
+from tqdm import tqdm
+import time
+import pandas as pd 
+import numpy as np
+torch.cuda.empty_cache()
+# 입력데이터 (frames, channesl, height, width)  -> CNN + self_attention  (batch_size, channesl, height, width)
+class VideoDataset(Dataset):
+    def __init__(self, df, transform=None):
+        self.df = df
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        with h5py.File(row['processed_frames'], 'r') as f:
+            frames = f['frames'][:]
+        if self.transform:
+            frames = [self.transform(frame) for frame in frames]
+        frames = torch.stack(frames)
+        # [frames, channels, height, width] -> [channels, frames, height, width]
+        frames = frames.permute(2, 0, 1, 3)    #?  이게 좀 이상하게 변환이 되는 것 같다 ...? 
+        label_columns = ['category_name_물건찾기', 'category_name_음주운전', 'category_name_졸음운전', 'category_name_차량제어', 'category_name_통화', 'category_name_휴대폰조작']
+        label = row[label_columns].values.astype(float)
+        label = torch.tensor(label, dtype=torch.float32)
+        return frames, label
+
+
+# 데이터프레임 로드
+train_df, test_df = train_test_split(X_video, test_size=0.2, random_state=42)
+
+transform = transforms.Compose([
+    transforms.ToTensor()
+])
+
+# 데이터셋 및 데이터로더 생성
+train_dataset = VideoDataset(train_df, transform=transform)
+test_dataset = VideoDataset(test_df, transform=transform)
+train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=2, shuffle=False)
+
+class SelfAttention(nn.Module):
+    def __init__(self, in_dim):
+        super(SelfAttention, self).__init__()
+        self.query_conv = nn.Conv2d(in_dim, in_dim // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_dim, in_dim // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_dim, in_dim, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        batch_size, C, width, height = x.size()
+        print(f"SelfAttention input shape: {x.shape}")  # 입력 데이터 shape 출력
+        query = self.query_conv(x).view(batch_size, -1, width * height).permute(0, 2, 1)
+        key = self.key_conv(x).view(batch_size, -1, width * height)
+        energy = torch.bmm(query, key)
+        attention = nn.functional.softmax(energy, dim=-1)
+        value = self.value_conv(x).view(batch_size, -1, width * height)
+        out = torch.bmm(value, attention.permute(0, 2, 1))
+        out = out.view(batch_size, C, width, height)
+        out = self.gamma * out + x
+        print(f"SelfAttention output shape: {out.shape}")  # 출력 데이터 shape 출력
+        return out
+
+class CNNLSTMSelfAttentionModel(nn.Module):
+    def __init__(self, num_classes):
+        super(CNNLSTMSelfAttentionModel, self).__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
+        self.self_attention = SelfAttention(128)
+        self.lstm = nn.LSTM(128 * 56 * 56, 256, batch_first=True)
+        self.fc = nn.Linear(256, num_classes)
+
+    def forward(self, x):
+        batch_size, seq_len, c, h, w = x.size()
+        print(f"Model input shape: {x.shape}")  # 입력 데이터 shape 출력
+        x = x.reshape(batch_size * seq_len, c, h, w)
+        cnn_out = self.cnn(x)
+        print(f"CNN output shape: {cnn_out.shape}")  # CNN 출력 데이터 shape 출력
+        cnn_out = self.self_attention(cnn_out)
+        cnn_out = cnn_out.reshape(batch_size, seq_len, -1)
+        print(f"SelfAttention output shape: {cnn_out.shape}")  # SelfAttention 출력 데이터 shape 출력
+        lstm_out, _ = self.lstm(cnn_out)
+        print(f"LSTM output shape: {lstm_out.shape}")  # LSTM 출력 데이터 shape 출력
+        lstm_out = lstm_out[:, -1, :]
+        out = self.fc(lstm_out)
+        print(f"Model output shape: {out.shape}")  # 모델 출력 데이터 shape 출력
+        return out
+
+# GPU 설정
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# 모델 인스턴스 생성 및 GPU로 이동
+num_classes = 6  # 범주 수
+model = CNNLSTMSelfAttentionModel(num_classes).to(device)
+
+# 손실 함수 및 옵티마이저 정의
+criterion = nn.BCEWithLogitsLoss()  # 다중 클래스 분류를 위한 손실 함수
+optimizer = optim.Adam(model.parameters(), lr=0.01)
+
+# 학습 루프
+num_epochs = 1
+for epoch in range(num_epochs):
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    start_time = time.time()
+    for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+        optimizer.zero_grad()
+        print(f"Batch input shape: {inputs.shape}")  # 배치 입력 데이터 shape 출력
+        inputs = inputs.permute(0, 2, 1, 3, 4).to(device)  # [batch_size, frames, channels, height, width] -> [batch_size, channels, frames, height, width]
+        labels = labels.to(device)
+        print(f"fixed shape: {inputs.shape}")
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+        
+        # 학습 정확도 계산
+        predicted = torch.sigmoid(outputs).round()
+        correct += (predicted == labels).sum().item()
+        total += labels.size(0) * labels.size(1)
+    
+    train_accuracy = correct / total
+    epoch_time = time.time() - start_time
+    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {running_loss/len(train_loader)}, Train Accuracy: {train_accuracy}, Time: {epoch_time:.2f}s")
+
+# 테스트 정확도 계산
+model.eval()
+correct = 0
+total = 0
+with torch.no_grad():
+    for inputs, labels in test_loader:
+        inputs = inputs.permute(0, 2, 1, 3, 4).to(device)  # [batch_size, frames, channels, height, width] -> [batch_size, channels, frames, height, width]
+        labels = labels.to(device)
+        outputs = model(inputs)
+        predicted = torch.sigmoid(outputs).round()
+        correct += (predicted == labels).sum().item()
+        total += labels.size(0) * labels.size(1)
+
+test_accuracy = correct / total
+print(f"Test Accuracy: {test_accuracy}")
+
+
+# In[17]:
+
+
+row = train_df.iloc[0]
+with h5py.File(row['processed_frames'], 'r') as f:
+    frames = f['frames'][:]
+print(f"Original frames shape: {frames.shape}")  # [frames, channels, height, width]
+
+transform = transforms.Compose([
+    transforms.ToTensor()
+])
+
+frames = [transform(frame) for frame in frames]
+frames = torch.stack(frames)
+frames = frames.permute(2, 0, 1, 3)
+frames = frames.unsqueeze(0)  # [frames, channels, height, width] -> [channels, frames, height, width]
+print(f"Transformed frames shape: {frames.shape}")  # [channels, frames, height, width]
+
+
+
+
+# In[8]:
+
+
+row = train_df.iloc[0]
+with h5py.File(row['processed_frames'], 'r') as f:
+    frames = f['frames'][:]
+print(f"Original frames shape: {frames.shape}")  # [frames, height, channels, width]
 
