@@ -12,7 +12,7 @@
 # CUDA - 11.8
 # cudnn - 8.7.0
 
-# In[1]:
+# In[6]:
 
 
 import pandas as pd
@@ -22,7 +22,7 @@ print(pd.__version__) # 2.0.3
 print(np.__version__) # 1.23.5
 
 
-# In[2]:
+# In[7]:
 
 
 import tensorflow as tf
@@ -47,7 +47,7 @@ else:
     print("No GPUs are available.")
 
 
-# In[3]:
+# In[8]:
 
 
 import torch
@@ -66,7 +66,7 @@ else:
     print("CUDA is not available.")
 
 
-# In[8]:
+# In[10]:
 
 
 # df_target = pd.read_csv("load_npy_img.csv",index_col=0)
@@ -301,10 +301,10 @@ plt.xlim(left=-50)
 plt.show()
 
 
-# In[12]:
+# In[1]:
 
 
-# 영상데이터 매핑
+영상데이터 매핑
 import os
 import glob
 import json
@@ -377,6 +377,130 @@ merged_df['label'].value_counts()
 
 
 merged_df.to_csv("merged_video.csv",index=False)
+
+
+# #### 비디오 클립으로 영상데이터 전처리 
+
+# In[35]:
+
+
+df_video = pd.read_csv("get_tensor.csv")
+df_video['frame_count'].describe()
+
+
+# In[26]:
+
+
+import pandas as pd
+df_video = pd.read_csv("get_tensor.csv")
+
+maping = {'졸음운전':[1,0,0,0,0,0], '음주운전':[0,1,0,0,0,0], '물건찾기':[0,0,1,0,0,0], '통화':[0,0,0,1,0,0], '휴대폰조작':[0,0,0,0,1,0], '차량제어':[0,0,0,0,0,1]}
+df_video['label_vector'] = df_video['category_name'].map(maping)
+df_video = df_video.sample(1)
+df_video
+
+
+# In[31]:
+
+
+import torch
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from torchvision.datasets.video_utils import VideoClips
+from torchvision.io import read_video, write_video
+from PIL import Image
+import pandas as pd
+import os
+
+class VideoDataset(Dataset):
+    def __init__(self, video_paths, clip_length_in_frames, frame_rate, transform=None, labels=None):
+        self.video_paths = video_paths
+        self.transform = transform
+        self.video_clips = VideoClips(video_paths, clip_length_in_frames=clip_length_in_frames, frame_rate=frame_rate)
+        self.labels = labels
+
+    def __len__(self):
+        return self.video_clips.num_clips()
+
+    def __getitem__(self, idx):
+        try:
+            video, _, info, video_idx = self.video_clips.get_clip(idx)
+            if self.transform:
+                video = torch.stack([self.transform(Image.fromarray(frame.numpy())) for frame in video])
+            label = self.get_label(video_idx)
+            return video, label
+        except Exception as e:
+            print(f"Error loading video at index {idx}: {e}")
+            return self.__getitem__((idx + 1) % len(self))
+
+    def get_label(self, video_idx):
+        return self.labels[video_idx]
+
+    def save_clip(self, idx, save_path):
+        video, _, info, _ = self.video_clips.get_clip(idx)
+        fps = info['video_fps']
+        write_video(save_path, video, fps=fps)
+
+
+video_paths = df_video['video_file'].tolist()
+labels = df_video['label_vector'].tolist()
+categories = df_video['category_name'].tolist()
+frame_counts = df_video['frame_count'].tolist()
+
+# 데이터셋 인스턴스 생성
+clip_length_in_frames = 60  # 각 클립의 프레임 수
+frame_rate = 40  # 프레임 속도
+
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor()
+])
+
+dataset = VideoDataset(video_paths, clip_length_in_frames, frame_rate, transform=transform, labels=labels)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+save_dir = "saved_clips"
+os.makedirs(save_dir, exist_ok=True)
+
+# 새로운 데이터프레임 생성
+df_clips = pd.DataFrame(columns=['clip_path', 'original_video_path', 'label', 'category_name', 'frame_count', 'clip_frame_count'])
+
+for video_idx, video_path in enumerate(video_paths):
+    video, _, info = read_video(video_path)
+    total_frames = video.shape[0]
+    num_clips = (total_frames + clip_length_in_frames - 1) // clip_length_in_frames  # 올림 계산
+
+    for clip_idx in range(num_clips):
+        start_frame = clip_idx * clip_length_in_frames
+        end_frame = min(start_frame + clip_length_in_frames, total_frames)
+        clip = video[start_frame:end_frame]
+        clip_frame_count = end_frame - start_frame
+        save_path = os.path.join(save_dir, f"clip_{video_idx}_{clip_idx}.mp4")
+        write_video(save_path, clip, fps=frame_rate)
+        label = labels[video_idx]
+        category_name = categories[video_idx]
+        frame_count = frame_counts[video_idx]
+        new_row = pd.DataFrame({
+            'clip_path': [save_path],
+            'original_video_path': [video_path],
+            'label': [label],
+            'category_name': [category_name],
+            'frame_count': [frame_count],
+            'clip_frame_count': [clip_frame_count]
+        })
+        df_clips = pd.concat([df_clips, new_row], ignore_index=True)
+        print(f"Saved clip {video_idx}_{clip_idx} to {save_path}")
+
+# 데이터프레임 저장
+df_clips.to_csv("clips_metadata.csv", index=False)
+
+
+# In[32]:
+
+
+aa = pd.read_csv("clips_metadata.csv")
+aa
 
 
 # In[ ]:
@@ -1838,7 +1962,7 @@ print(f'Best Validation Accuracy: {best_val_accuracy}%')
 
 # ### 영상데이터만으로 전처리 후 모델링 
 
-# In[3]:
+# In[38]:
 
 
 import pandas as pd
@@ -1846,7 +1970,7 @@ df_video = pd.read_csv("merged_video.csv")
 df_video
 
 
-# In[4]:
+# In[39]:
 
 
 #df_video['frame_count'].describe()  # mean 179, std 124, 75% 215, max 3006
@@ -1854,7 +1978,7 @@ df_video = df_video.loc[df_video['frame_count']!=0].reset_index(drop=True)
 df_video
 
 
-# In[5]:
+# In[3]:
 
 
 import matplotlib.pyplot as plt
@@ -1883,7 +2007,7 @@ plt.ylabel('비디오 수')
 plt.show()
 
 
-# In[6]:
+# In[40]:
 
 
 df_1 = df_video.loc[df_video['category_name']=='졸음운전'].sample(2000)
@@ -1976,10 +2100,114 @@ def save_to_hdf5(frames, output_path):
 
 
 # 고정할 프레임 수 설정 (중간값 사용)
-target_length = int(df_sample['frame_count'].median())
+target_length = 70
 
 # 중간 결과 저장 디렉토리 생성
-output_dir = 'processed_frames'
+output_dir = 'processed_frames_frame_70'
+os.makedirs(output_dir, exist_ok=True)
+
+# tqdm을 사용하여 진행 상황 표시
+for idx, video_file in tqdm(enumerate(df_sample['video_file']), desc="Processing videos", total=len(df_sample['video_file'])):
+    try:
+        frames = extract_and_preprocess_frames(video_file, target_length)
+        save_to_hdf5(frames, os.path.join(output_dir, f'frames_{idx}.h5'))
+    except FileNotFoundError as e:
+        print(e)
+        # 빈 데이터셋 저장
+        save_to_hdf5(None, os.path.join(output_dir, f'frames_{idx}.h5'))
+
+# 결과를 데이터프레임에 저장
+df_sample['processed_frames'] = [os.path.join(output_dir, f'frames_{idx}.h5') for idx in range(len(df_sample['video_file']))]
+
+# 결과 출력
+df_sample.head()
+
+
+# In[42]:
+
+
+import os
+import cv2
+import numpy as np
+import torch
+from PIL import Image
+import torchvision.transforms as transforms
+import pandas as pd
+from tqdm import tqdm
+import h5py
+
+# GPU 메모리 캐시 비우기
+torch.cuda.empty_cache()
+
+# 이미지 전처리 정의
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor()
+])
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+def preprocess_frame(frame):
+    img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    img = transform(img).to(device)
+    return img
+
+def average_frames(frames):
+    frames_array = torch.stack(frames)
+    avg_frame = torch.mean(frames_array, dim=0)
+    return avg_frame
+
+def adjust_frame_sequence(frames, target_length):
+    num_frames = len(frames)
+
+    if num_frames > target_length:
+        group_size = num_frames // target_length
+        averaged_frames = []
+        for i in range(0, num_frames, group_size):
+            group = frames[i:i + group_size]
+            avg_frame = average_frames(group)
+            averaged_frames.append(avg_frame)
+        frames = averaged_frames[:target_length]
+    
+    elif num_frames < target_length:
+        repeat_count = target_length // num_frames
+        remainder = target_length % num_frames
+        frames = frames * repeat_count + frames[:remainder]
+    
+    return frames
+
+def extract_and_preprocess_frames(video_path, target_length):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Cannot open video file: {video_path}")
+    
+    frames = []
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break 
+        frames.append(preprocess_frame(frame))
+    cap.release()
+
+    frames = adjust_frame_sequence(frames, target_length)
+    return torch.stack(frames)
+
+def save_to_hdf5(frames, output_path):
+    with h5py.File(output_path, 'w') as f:
+        if frames is not None:
+            f.create_dataset('frames', data=frames.cpu().numpy(), compression='gzip')
+        else:
+            # 빈 데이터셋 생성
+            f.create_dataset('frames', shape=(0, 3, 224, 224), dtype='float32')
+
+
+# 고정할 프레임 수 설정 (중간값 사용)
+target_length = 70
+
+# 중간 결과 저장 디렉토리 생성
+output_dir = 'processed_frames_frame_70'
 os.makedirs(output_dir, exist_ok=True)
 
 # tqdm을 사용하여 진행 상황 표시
@@ -2065,10 +2293,10 @@ encoder = OneHotEncoder()
 #filtered_df = video_train.loc[:, ~video_train.columns.str.contains('video_file|frame_count|occupant_id|label')]
 
 X_video = pd.read_csv("./train_video.csv")
-X_video
+X_video = X_video.sample(n=2000, random_state = 42)
 
 
-# In[4]:
+# In[5]:
 
 
 import torch 
@@ -2082,6 +2310,7 @@ from tqdm import tqdm
 import time
 import pandas as pd 
 import numpy as np
+from PIL import Image
 torch.cuda.empty_cache()
 # 입력데이터 (frames, channesl, height, width)  -> CNN + self_attention  (batch_size, channesl, height, width)
 class VideoDataset(Dataset):
@@ -2091,7 +2320,7 @@ class VideoDataset(Dataset):
 
     def __len__(self):
         return len(self.df)
-
+    
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         with h5py.File(row['processed_frames'], 'r') as f:
@@ -2107,10 +2336,13 @@ class VideoDataset(Dataset):
         return frames, label
 
 
+
+
 # 데이터프레임 로드
 train_df, test_df = train_test_split(X_video, test_size=0.2, random_state=42)
 
 transform = transforms.Compose([
+    transforms.Resize((112, 112)),
     transforms.ToTensor()
 ])
 
@@ -2146,16 +2378,16 @@ class CNNLSTMSelfAttentionModel(nn.Module):
     def __init__(self, num_classes):
         super(CNNLSTMSelfAttentionModel, self).__init__()
         self.cnn = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2)
         )
         self.self_attention = SelfAttention(128)
-        self.lstm = nn.LSTM(128 * 56 * 56, 256, batch_first=True)
-        self.fc = nn.Linear(256, num_classes)
+        self.lstm = nn.LSTM(64 * 28 * 28, 128, batch_first=True)
+        self.fc = nn.Linear(128, num_classes)
 
     def forward(self, x):
         batch_size, seq_len, c, h, w = x.size()
@@ -2183,7 +2415,9 @@ model = CNNLSTMSelfAttentionModel(num_classes).to(device)
 
 # 손실 함수 및 옵티마이저 정의
 criterion = nn.BCEWithLogitsLoss()  # 다중 클래스 분류를 위한 손실 함수
-optimizer = optim.Adam(model.parameters(), lr=0.01)
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+
 
 # 학습 루프
 num_epochs = 1
@@ -2223,6 +2457,193 @@ with torch.no_grad():
         inputs = inputs.permute(0, 2, 1, 3, 4).to(device)  # [batch_size, frames, channels, height, width] -> [batch_size, channels, frames, height, width]
         labels = labels.to(device)
         outputs = model(inputs)
+        predicted = torch.sigmoid(outputs).round()
+        correct += (predicted == labels).sum().item()
+        total += labels.size(0) * labels.size(1)
+
+test_accuracy = correct / total
+print(f"Test Accuracy: {test_accuracy}")
+
+
+# In[6]:
+
+
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+import torch 
+import torch.nn as nn 
+import torch.nn.functional as F 
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+import h5py
+from tqdm import tqdm
+import time
+import pandas as pd 
+import numpy as np
+from sklearn.model_selection import train_test_split
+from torch.cuda.amp import autocast, GradScaler  # 추가
+
+torch.cuda.empty_cache()
+
+# 입력데이터 (frames, channesl, height, width)  -> CNN + self_attention  (batch_size, channesl, height, width)
+class VideoDataset(Dataset):
+    def __init__(self, df, transform=None):
+        self.df = df
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        with h5py.File(row['processed_frames'], 'r') as f:
+            frames = f['frames'][:]
+        frames = torch.tensor(frames, dtype=torch.float32)  # 명시적으로 torch.Tensor로 변환
+        if self.transform:
+            frames = [self.transform(frame) for frame in frames]
+        frames = torch.stack(frames)
+        frames = frames.permute(2, 0, 1, 3)  # [frames, channels, height, width] -> [channels, frames, height, width]
+        frames = torch.tensor(frames, dtype=torch.float32)  # 명시적으로 torch.Tensor로 변환
+        print(f"frames type: {type(frames)}")  # 디버깅을 위해 타입 출력
+        label_columns = ['category_name_물건찾기', 'category_name_음주운전', 'category_name_졸음운전', 'category_name_차량제어', 'category_name_통화', 'category_name_휴대폰조작']
+        label = row[label_columns].values.astype(float)
+        label = torch.tensor(label, dtype=torch.float32)
+        print(f"label type: {type(label)}")  # 디버깅을 위해 타입 출력
+        return frames, label
+
+# 데이터프레임 로드
+train_df, test_df = train_test_split(X_video, test_size=0.2, random_state=42)
+
+transform = transforms.Compose([
+    transforms.Resize((112, 112)),
+    transforms.ToTensor()
+])
+
+# 데이터셋 및 데이터로더 생성
+train_dataset = VideoDataset(train_df, transform=transform)
+test_dataset = VideoDataset(test_df, transform=transform)
+train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=2, shuffle=False)
+
+class SelfAttention(nn.Module):
+    def __init__(self, in_dim):
+        super(SelfAttention, self).__init__()
+        self.query_conv = nn.Conv2d(in_dim, in_dim // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_dim, in_dim // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_dim, in_dim, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        batch_size, C, width, height = x.size()
+        print(f"SelfAttention input shape: {x.shape}")  # 입력 데이터 shape 출력
+        query = self.query_conv(x).view(batch_size, -1, width * height).permute(0, 2, 1)
+        key = self.key_conv(x).view(batch_size, -1, width * height)
+        energy = torch.bmm(query, key)
+        attention = nn.functional.softmax(energy, dim=-1)
+        value = self.value_conv(x).view(batch_size, -1, width * height)
+        out = torch.bmm(value, attention.permute(0, 2, 1))
+        out = out.view(batch_size, C, width, height)
+        out = self.gamma * out + x
+        print(f"SelfAttention output shape: {out.shape}")  # 출력 데이터 shape 출력
+        return out
+
+class CNNLSTMSelfAttentionModel(nn.Module):
+    def __init__(self, num_classes):
+        super(CNNLSTMSelfAttentionModel, self).__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
+        self.self_attention = SelfAttention(64)
+        self.lstm = nn.LSTM(64 * 28 * 28, 128, batch_first=True)
+        self.fc = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        batch_size, seq_len, c, h, w = x.size()
+        print(f"Model input shape: {x.shape}")  # 입력 데이터 shape 출력
+        x = x.reshape(batch_size * seq_len, c, h, w)
+        cnn_out = self.cnn(x)
+        print(f"CNN output shape: {cnn_out.shape}")  # CNN 출력 데이터 shape 출력
+        cnn_out = self.self_attention(cnn_out)
+        cnn_out = cnn_out.reshape(batch_size, seq_len, -1)
+        print(f"SelfAttention output shape: {cnn_out.shape}")  # SelfAttention 출력 데이터 shape 출력
+        lstm_out, _ = self.lstm(cnn_out)
+        print(f"LSTM output shape: {lstm_out.shape}")  # LSTM 출력 데이터 shape 출력
+        lstm_out = lstm_out[:, -1, :]
+        out = self.fc(lstm_out)
+        print(f"Model output shape: {out.shape}")  # 모델 출력 데이터 shape 출력
+        return out
+
+# GPU 설정
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# 모델 인스턴스 생성 및 GPU로 이동
+num_classes = 6  # 범주 수
+model = CNNLSTMSelfAttentionModel(num_classes).to(device)
+
+# 손실 함수 및 옵티마이저 정의
+criterion = nn.BCEWithLogitsLoss()  # 다중 클래스 분류를 위한 손실 함수
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# GradScaler 초기화
+scaler = GradScaler()
+
+# 학습 루프
+num_epochs = 1
+for epoch in range(num_epochs):
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    start_time = time.time()
+    for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+        optimizer.zero_grad()
+        print(f"Batch input shape: {inputs.shape}")  # 배치 입력 데이터 shape 출력
+        inputs = inputs.permute(0, 2, 1, 3, 4).to(device)  # [batch_size, frames, channels, height, width] -> [batch_size, channels, frames, height, width]
+        labels = labels.to(device)
+        print(f"fixed shape: {inputs.shape}")
+        
+        # autocast 컨텍스트 매니저 사용
+        with autocast():
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+        
+        # GradScaler를 사용하여 역전파 수행
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        
+        running_loss += loss.item()
+        
+        # 학습 정확도 계산
+        predicted = torch.sigmoid(outputs).round()
+        correct += (predicted == labels).sum().item()
+        total += labels.size(0) * labels.size(1)
+    
+    train_accuracy = correct / total
+    epoch_time = time.time() - start_time
+    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {running_loss/len(train_loader)}, Train Accuracy: {train_accuracy}, Time: {epoch_time:.2f}s")
+
+# 테스트 정확도 계산
+model.eval()
+correct = 0
+total = 0
+with torch.no_grad():
+    for inputs, labels in test_loader:
+        inputs = inputs.permute(0, 2, 1, 3, 4).to(device)  # [batch_size, frames, channels, height, width] -> [batch_size, channels, frames, height, width]
+        labels = labels.to(device)
+        
+        # autocast 컨텍스트 매니저 사용
+        with autocast():
+            outputs = model(inputs)
+        
         predicted = torch.sigmoid(outputs).round()
         correct += (predicted == labels).sum().item()
         total += labels.size(0) * labels.size(1)
