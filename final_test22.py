@@ -2305,9 +2305,10 @@ filtered_df = video_train.loc[:, ~video_train.columns.str.contains('video_file|f
 filtered_df.to_csv('train_video70.csv', index=False)
 
 
-# In[2]:
+# In[1]:
 
 
+import pandas as pd
 X_video = pd.read_csv("train_video70.csv")
 X_video
 
@@ -2410,8 +2411,8 @@ transform = transforms.Compose([
 # 데이터셋 및 데이터로더 생성
 train_dataset = VideoDataset(train_df, transform=transform)
 test_dataset = VideoDataset(test_df, transform=transform)
-train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=2, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
 class SelfAttention(nn.Module):
     def __init__(self, in_dim):
@@ -2439,16 +2440,16 @@ class CNNLSTMSelfAttentionModel(nn.Module):
     def __init__(self, num_classes):
         super(CNNLSTMSelfAttentionModel, self).__init__()
         self.cnn = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2)
         )
-        self.self_attention = SelfAttention(64)
-        self.lstm = nn.LSTM(64 * 28 * 28, 128, batch_first=True)
-        self.fc = nn.Linear(128, num_classes)
+        self.self_attention = SelfAttention(128)
+        self.lstm = nn.LSTM(128 * 28 * 28, 256, batch_first=True)
+        self.fc = nn.Linear(256, num_classes)
 
     def forward(self, x):
         batch_size, seq_len, c, h, w = x.size()
@@ -2526,12 +2527,14 @@ test_accuracy = correct / total
 print(f"Test Accuracy: {test_accuracy}")
 
 
-# In[6]:
+# In[1]:
 
 
-import os
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+#attention + CNN +LSTM 확인 코드 
+# attention layer + CNN 출력 layer , LSTM 레이어 수 조심 
+# permute 조심 
 
+from sklearn.model_selection import train_test_split
 import torch 
 import torch.nn as nn 
 import torch.nn.functional as F 
@@ -2543,12 +2546,10 @@ from tqdm import tqdm
 import time
 import pandas as pd 
 import numpy as np
-from sklearn.model_selection import train_test_split
-from torch.cuda.amp import autocast, GradScaler  # 추가
-
+from PIL import Image
 torch.cuda.empty_cache()
-
 # 입력데이터 (frames, channesl, height, width)  -> CNN + self_attention  (batch_size, channesl, height, width)
+
 class VideoDataset(Dataset):
     def __init__(self, df, transform=None):
         self.df = df
@@ -2556,23 +2557,29 @@ class VideoDataset(Dataset):
 
     def __len__(self):
         return len(self.df)
-
+    
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         with h5py.File(row['processed_frames'], 'r') as f:
             frames = f['frames'][:]
-        frames = torch.tensor(frames, dtype=torch.float32)  # 명시적으로 torch.Tensor로 변환
+        
+        # 데이터의 차원을 변환하여 (height, width, channels) 형식으로 변경
+        frames = [np.transpose(frame, (1, 2, 0)).astype(np.uint8) for frame in frames]
+        
         if self.transform:
-            frames = [self.transform(frame) for frame in frames]
+            frames = [self.transform(Image.fromarray(frame)) for frame in frames]
+        
         frames = torch.stack(frames)
-        frames = frames.permute(2, 0, 1, 3)  # [frames, channels, height, width] -> [channels, frames, height, width]
-        frames = torch.tensor(frames, dtype=torch.float32)  # 명시적으로 torch.Tensor로 변환
-        print(f"frames type: {type(frames)}")  # 디버깅을 위해 타입 출력
+        # [frames, channels, height, width] -> [channels, frames, height, width]
+        frames = frames.permute(1, 0, 2, 3)  # [frames, channels, height, width] -> [channels, frames, height, width]
+        
         label_columns = ['category_name_물건찾기', 'category_name_음주운전', 'category_name_졸음운전', 'category_name_차량제어', 'category_name_통화', 'category_name_휴대폰조작']
         label = row[label_columns].values.astype(float)
         label = torch.tensor(label, dtype=torch.float32)
-        print(f"label type: {type(label)}")  # 디버깅을 위해 타입 출력
         return frames, label
+
+
+
 
 # 데이터프레임 로드
 train_df, test_df = train_test_split(X_video, test_size=0.2, random_state=42)
@@ -2585,8 +2592,8 @@ transform = transforms.Compose([
 # 데이터셋 및 데이터로더 생성
 train_dataset = VideoDataset(train_df, transform=transform)
 test_dataset = VideoDataset(test_df, transform=transform)
-train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=2, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
 
 class SelfAttention(nn.Module):
     def __init__(self, in_dim):
@@ -2598,7 +2605,7 @@ class SelfAttention(nn.Module):
 
     def forward(self, x):
         batch_size, C, width, height = x.size()
-        print(f"SelfAttention input shape: {x.shape}")  # 입력 데이터 shape 출력
+        #print(f"SelfAttention input shape: {x.shape}")  # 입력 데이터 shape 출력
         query = self.query_conv(x).view(batch_size, -1, width * height).permute(0, 2, 1)
         key = self.key_conv(x).view(batch_size, -1, width * height)
         energy = torch.bmm(query, key)
@@ -2607,38 +2614,38 @@ class SelfAttention(nn.Module):
         out = torch.bmm(value, attention.permute(0, 2, 1))
         out = out.view(batch_size, C, width, height)
         out = self.gamma * out + x
-        print(f"SelfAttention output shape: {out.shape}")  # 출력 데이터 shape 출력
+        #print(f"SelfAttention output shape: {out.shape}")  # 출력 데이터 shape 출력
         return out
 
 class CNNLSTMSelfAttentionModel(nn.Module):
     def __init__(self, num_classes):
         super(CNNLSTMSelfAttentionModel, self).__init__()
         self.cnn = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2)
         )
-        self.self_attention = SelfAttention(64)
-        self.lstm = nn.LSTM(64 * 28 * 28, 128, batch_first=True)
-        self.fc = nn.Linear(128, num_classes)
+        self.self_attention = SelfAttention(128)
+        self.lstm = nn.LSTM(128 * 28 * 28, 256, batch_first=True)
+        self.fc = nn.Linear(256, num_classes)
 
     def forward(self, x):
         batch_size, seq_len, c, h, w = x.size()
-        print(f"Model input shape: {x.shape}")  # 입력 데이터 shape 출력
+        #print(f"Model input shape: {x.shape}")  # 입력 데이터 shape 출력
         x = x.reshape(batch_size * seq_len, c, h, w)
         cnn_out = self.cnn(x)
-        print(f"CNN output shape: {cnn_out.shape}")  # CNN 출력 데이터 shape 출력
+        #print(f"CNN output shape: {cnn_out.shape}")  # CNN 출력 데이터 shape 출력
         cnn_out = self.self_attention(cnn_out)
         cnn_out = cnn_out.reshape(batch_size, seq_len, -1)
-        print(f"SelfAttention output shape: {cnn_out.shape}")  # SelfAttention 출력 데이터 shape 출력
+        #print(f"SelfAttention output shape: {cnn_out.shape}")  # SelfAttention 출력 데이터 shape 출력
         lstm_out, _ = self.lstm(cnn_out)
-        print(f"LSTM output shape: {lstm_out.shape}")  # LSTM 출력 데이터 shape 출력
+        #print(f"LSTM output shape: {lstm_out.shape}")  # LSTM 출력 데이터 shape 출력
         lstm_out = lstm_out[:, -1, :]
         out = self.fc(lstm_out)
-        print(f"Model output shape: {out.shape}")  # 모델 출력 데이터 shape 출력
+        #print(f"Model output shape: {out.shape}")  # 모델 출력 데이터 shape 출력
         return out
 
 # GPU 설정
@@ -2653,11 +2660,10 @@ model = CNNLSTMSelfAttentionModel(num_classes).to(device)
 criterion = nn.BCEWithLogitsLoss()  # 다중 클래스 분류를 위한 손실 함수
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-# GradScaler 초기화
-scaler = GradScaler()
+
 
 # 학습 루프
-num_epochs = 1
+num_epochs = 3
 for epoch in range(num_epochs):
     model.train()
     running_loss = 0.0
@@ -2666,21 +2672,14 @@ for epoch in range(num_epochs):
     start_time = time.time()
     for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
         optimizer.zero_grad()
-        print(f"Batch input shape: {inputs.shape}")  # 배치 입력 데이터 shape 출력
+        #print(f"Batch input shape: {inputs.shape}")  # 배치 입력 데이터 shape 출력
         inputs = inputs.permute(0, 2, 1, 3, 4).to(device)  # [batch_size, frames, channels, height, width] -> [batch_size, channels, frames, height, width]
         labels = labels.to(device)
-        print(f"fixed shape: {inputs.shape}")
-        
-        # autocast 컨텍스트 매니저 사용
-        with autocast():
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-        
-        # GradScaler를 사용하여 역전파 수행
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        
+        #print(f"fixed shape: {inputs.shape}")
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
         running_loss += loss.item()
         
         # 학습 정확도 계산
@@ -2700,20 +2699,16 @@ with torch.no_grad():
     for inputs, labels in test_loader:
         inputs = inputs.permute(0, 2, 1, 3, 4).to(device)  # [batch_size, frames, channels, height, width] -> [batch_size, channels, frames, height, width]
         labels = labels.to(device)
-        
-        # autocast 컨텍스트 매니저 사용
-        with autocast():
-            outputs = model(inputs)
-        
+        outputs = model(inputs)
         predicted = torch.sigmoid(outputs).round()
         correct += (predicted == labels).sum().item()
         total += labels.size(0) * labels.size(1)
 
 test_accuracy = correct / total
-print(f"Test Accuracy: {test_accuracy}")
+print(f"Test Accuracy: {test_accuracy}") 
 
 
-# In[17]:
+# In[8]:
 
 
 row = train_df.iloc[0]
@@ -2741,4 +2736,181 @@ row = train_df.iloc[0]
 with h5py.File(row['processed_frames'], 'r') as f:
     frames = f['frames'][:]
 print(f"Original frames shape: {frames.shape}")  # [frames, height, channels, width]
+
+
+# In[ ]:
+
+
+
+
+
+# #### CNN + Transformer 
+
+# In[2]:
+
+
+from PIL import Image
+import warnings
+import pandas as pd 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.transforms as transforms
+import torchvision.models as models
+from torch.utils.data import Dataset, DataLoader
+import h5py
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import numpy as np
+from tqdm import tqdm  # TQDM 라이브러리 추가
+torch.cuda.empty_cache()
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+class VideoDataset(Dataset):
+    def __init__(self, df, transform=None):
+        self.df = df
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        with h5py.File(row['processed_frames'], 'r') as f:
+            frames = f['frames'][:]
+        # frames 배열의 형식을 (224, 224, 3)으로 변환
+        frames = [frame.transpose(1, 2, 0) for frame in frames]  # (channels, height, width) -> (height, width, channels)
+        frames = [Image.fromarray(frame.astype('uint8')) for frame in frames]  # Convert to PIL.Image
+        if self.transform:
+            frames = [self.transform(frame) for frame in frames]
+        frames = torch.stack(frames)
+        frames = frames.permute(1, 0, 2, 3)  # [frames, channels, height, width] -> [channels, frames, height, width]
+        frames = frames.permute(1, 0, 2, 3)  # [channels, frames, height, width] -> [frames, channels, height, width]
+        label_columns = ['category_name_물건찾기', 'category_name_음주운전', 'category_name_졸음운전', 'category_name_차량제어', 'category_name_통화', 'category_name_휴대폰조작']
+        label = row[label_columns].values.astype(float)
+        label = torch.tensor(label, dtype=torch.float32)
+        return frames, label
+
+X_video = pd.read_csv("train_video70.csv")
+# 데이터프레임 로드
+train_df, test_df = train_test_split(X_video, test_size=0.2, random_state=42)
+
+transform = transforms.Compose([
+    transforms.Resize((112, 112)),  # 입력 이미지 크기를 112x112로 줄임
+    transforms.ToTensor()
+])
+
+# 데이터셋 및 데이터로더 생성
+train_dataset = VideoDataset(train_df, transform=transform)
+test_dataset = VideoDataset(test_df, transform=transform)
+train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)  # 배치 크기를 2로 줄임
+test_loader = DataLoader(test_dataset, batch_size=2, shuffle=False)  # 배치 크기를 2로 줄임
+
+class CNNBackbone(nn.Module):
+    def __init__(self):
+        super(CNNBackbone, self).__init__()
+        self.cnn = models.resnet152(pretrained=True)
+        self.cnn.fc = nn.Identity()
+
+    def forward(self, x):
+        x = self.cnn(x)
+        return x
+    
+class TransformerEncoder(nn.Module):
+    def __init__(self, d_model, nhead, num_layers):
+        super(TransformerEncoder, self).__init__()
+        self.transformer_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead)
+        self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
+    
+    def forward(self, x):
+        x = self.transformer_encoder(x)
+        return x 
+    
+class CNNTransformer(nn.Module):
+    def __init__(self, num_classes, d_model=2048, nhead=8, num_layers=6):
+        super(CNNTransformer, self).__init__()
+        self.cnn_backbone = CNNBackbone()
+        self.flatten = nn.Flatten(start_dim=2)  # Flatten the spatial dimensions
+        self.linear_proj = nn.Linear(2048, d_model)  # Adjust based on the output size of CNN
+        self.transformer_encoder = TransformerEncoder(d_model=d_model, nhead=nhead, num_layers=num_layers)
+        self.classifier = nn.Linear(d_model, num_classes)
+
+    def forward(self, x):
+        batch_size, frames, channels, height, width = x.shape
+        #print(f"Input shape: {x.shape}")
+        x = x.view(batch_size * frames, channels, height, width)  # Reshape to (batch_size * frames, channels, height, width)
+        #print(f"After view: {x.shape}")
+        x = self.cnn_backbone(x)  # [batch_size * frames, 2048, 3, 3]
+        #print(f"After CNN backbone: {x.shape}")
+        x = x.view(batch_size, frames, -1)  # Reshape to (batch_size, frames, 2048 * 3 * 3)
+        #print(f"After second view: {x.shape}")
+        x = self.linear_proj(x)  # [batch_size, frames, d_model]
+        #print(f"After linear projection: {x.shape}")
+        x = x.permute(1, 0, 2)  # [frames, batch_size, d_model]
+        #print(f"After permute: {x.shape}")
+        x = self.transformer_encoder(x)  # [frames, batch_size, d_model]
+        #print(f"After transformer encoder: {x.shape}")
+        x = x.mean(dim=0)  # Global average pooling over the sequence dimension
+        #print(f"After global average pooling: {x.shape}")
+        x = self.classifier(x)  # [batch_size, num_classes]
+        #print(f"After classifier: {x.shape}")
+        return x
+
+# 모델 생성
+model = CNNTransformer(num_classes=6)
+
+# 손실 함수 및 옵티마이저 정의
+criterion = nn.BCEWithLogitsLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# 학습 함수 정의
+def train(model, train_loader, criterion, optimizer, device):
+    model.train()
+    running_loss = 0.0
+    scaler = torch.cuda.amp.GradScaler()  # Mixed Precision Training을 위한 GradScaler
+    for inputs, labels in tqdm(train_loader, desc="Training", mininterval=10):  # TQDM을 사용하여 진행 상황 표시, mininterval 설정
+        inputs, labels = inputs.to(device), labels.to(device)
+        optimizer.zero_grad()
+        with torch.cuda.amp.autocast():  # Mixed Precision Training
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        running_loss += loss.item()
+    return running_loss / len(train_loader)
+
+# 평가 함수 정의
+def evaluate(model, test_loader, criterion, device):
+    model.eval()
+    running_loss = 0.0
+    all_labels = []
+    all_preds = []
+    with torch.no_grad():
+        for inputs, labels in tqdm(test_loader, desc="Evaluating", mininterval=50):  # TQDM을 사용하여 진행 상황 표시, mininterval 설정
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            running_loss += loss.item()
+            preds = torch.sigmoid(outputs).cpu().numpy()
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(preds)
+    accuracy = accuracy_score(np.array(all_labels).argmax(axis=1), np.array(all_preds).argmax(axis=1))
+    return running_loss / len(test_loader), accuracy
+
+# 학습 및 평가 루프
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+
+num_epochs = 1
+for epoch in range(num_epochs):
+    train_loss = train(model, train_loader, criterion, optimizer, device)
+    test_loss, test_accuracy = evaluate(model, test_loader, criterion, device)
+    print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.4f}")
+
+
+# In[2]:
+
+
+torch.cuda.empty_cache()
 
