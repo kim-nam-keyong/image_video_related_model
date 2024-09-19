@@ -1962,7 +1962,7 @@ print(f'Best Validation Accuracy: {best_val_accuracy}%')
 
 # ### 영상데이터만으로 전처리 후 모델링 
 
-# In[38]:
+# In[3]:
 
 
 import pandas as pd
@@ -1970,7 +1970,7 @@ df_video = pd.read_csv("merged_video.csv")
 df_video
 
 
-# In[39]:
+# In[4]:
 
 
 #df_video['frame_count'].describe()  # mean 179, std 124, 75% 215, max 3006
@@ -2007,7 +2007,7 @@ plt.ylabel('비디오 수')
 plt.show()
 
 
-# In[40]:
+# In[5]:
 
 
 df_1 = df_video.loc[df_video['category_name']=='졸음운전'].sample(2000)
@@ -2021,7 +2021,7 @@ df_sample = pd.concat([df_1, df_2, df_3, df_4, df_5, df_6]).reset_index(drop=Tru
 df_sample
 
 
-# In[8]:
+# In[6]:
 
 
 import os
@@ -2120,10 +2120,10 @@ for idx, video_file in tqdm(enumerate(df_sample['video_file']), desc="Processing
 df_sample['processed_frames'] = [os.path.join(output_dir, f'frames_{idx}.h5') for idx in range(len(df_sample['video_file']))]
 
 # 결과 출력
-df_sample.head()
+df_sample.to_csv("fram70_df.csv", index=False)
 
 
-# In[42]:
+# In[43]:
 
 
 import os
@@ -2227,6 +2227,13 @@ df_sample['processed_frames'] = [os.path.join(output_dir, f'frames_{idx}.h5') fo
 df_sample.head()
 
 
+# In[44]:
+
+
+import os
+os.system("shutdown /s /t 5")
+
+
 # In[21]:
 
 
@@ -2280,25 +2287,72 @@ plt.imshow(img)
 
 # #### Attention + CNN + LSTM 
 
-# In[1]:
+# In[24]:
 
 
 from sklearn.preprocessing import OneHotEncoder,LabelEncoder
 from sklearn.model_selection import train_test_split 
 import pandas as pd
+X_video = pd.read_csv("./fram70_df.csv")
 encoder = OneHotEncoder()
-#category_encoded = encoder.fit_transform(df[['category_name']]).toarray()
-#category_encoded_df = pd.DataFrame(category_encoded, columns=encoder.get_feature_names_out(['category_name']))
-#video_train = pd.concat([df, category_encoded_df], axis=1)
-#filtered_df = video_train.loc[:, ~video_train.columns.str.contains('video_file|frame_count|occupant_id|label')]
-
-X_video = pd.read_csv("./train_video.csv")
-X_video = X_video.sample(n=2000, random_state = 42)
+category_encoded = encoder.fit_transform(X_video[['category_name']]).toarray()
+category_encoded_df = pd.DataFrame(category_encoded, columns=encoder.get_feature_names_out(['category_name']))
+video_train = pd.concat([X_video, category_encoded_df], axis=1)
+filtered_df = video_train.loc[:, ~video_train.columns.str.contains('video_file|frame_count|occupant_id|label')]
 
 
-# In[5]:
+#X_video = X_video.sample(n=2000, random_state = 42)
+filtered_df.to_csv('train_video70.csv', index=False)
 
 
+# In[2]:
+
+
+X_video = pd.read_csv("train_video70.csv")
+X_video
+
+
+# In[41]:
+
+
+import h5py
+import numpy as np
+from PIL import Image
+import torchvision.transforms as transforms
+
+# HDF5 파일에서 데이터 읽기
+with h5py.File(X_video['processed_frames'][0], 'r') as f:
+    frames = f['frames'][:]
+    print(list(f.keys()))
+    print(frames.shape)  # 데이터의 전체 형태 확인
+    print(frames[0].shape)  # 첫 번째 프레임의 형태 확인
+    print(frames[0])  # 첫 번째 프레임의 데이터 확인
+    print(f"Min value: {frames[0].min()}, Max value: {frames[0].max()}, Mean value: {frames[0].mean()}")  # 데이터의 최소값, 최대값, 평균값 확인
+
+# 데이터의 차원을 변환하여 (height, width, channels) 형식으로 변경
+frame = np.transpose(frames[0], (1, 2, 0))
+print(frame.dtype)  # 데이터 타입 확인
+frame = frame.astype(np.uint8)
+print(frame.dtype)  # 변환 후 데이터 타입 확인
+
+# PIL.Image로 변환 후 transform 적용
+transform = transforms.Compose([
+    transforms.Resize((112, 112)),
+    transforms.ToTensor()
+])
+
+pil_image = Image.fromarray(frame)
+pil_image.show()  # PIL 이미지 확인
+
+transformed_frame = transform(pil_image)
+print(transformed_frame)  # 변환된 데이터 확인
+print(f"Transformed frame - Min value: {transformed_frame.min()}, Max value: {transformed_frame.max()}, Mean value: {transformed_frame.mean()}")  # 변환된 데이터의 최소값, 최대값, 평균값 확인
+
+
+# In[4]:
+
+
+from sklearn.model_selection import train_test_split
 import torch 
 import torch.nn as nn 
 import torch.nn.functional as F 
@@ -2313,6 +2367,7 @@ import numpy as np
 from PIL import Image
 torch.cuda.empty_cache()
 # 입력데이터 (frames, channesl, height, width)  -> CNN + self_attention  (batch_size, channesl, height, width)
+
 class VideoDataset(Dataset):
     def __init__(self, df, transform=None):
         self.df = df
@@ -2325,11 +2380,17 @@ class VideoDataset(Dataset):
         row = self.df.iloc[idx]
         with h5py.File(row['processed_frames'], 'r') as f:
             frames = f['frames'][:]
+        
+        # 데이터의 차원을 변환하여 (height, width, channels) 형식으로 변경
+        frames = [np.transpose(frame, (1, 2, 0)).astype(np.uint8) for frame in frames]
+        
         if self.transform:
-            frames = [self.transform(frame) for frame in frames]
+            frames = [self.transform(Image.fromarray(frame)) for frame in frames]
+        
         frames = torch.stack(frames)
         # [frames, channels, height, width] -> [channels, frames, height, width]
-        frames = frames.permute(2, 0, 1, 3)    #?  이게 좀 이상하게 변환이 되는 것 같다 ...? 
+        frames = frames.permute(1, 0, 2, 3)  # [frames, channels, height, width] -> [channels, frames, height, width]
+        
         label_columns = ['category_name_물건찾기', 'category_name_음주운전', 'category_name_졸음운전', 'category_name_차량제어', 'category_name_통화', 'category_name_휴대폰조작']
         label = row[label_columns].values.astype(float)
         label = torch.tensor(label, dtype=torch.float32)
@@ -2362,7 +2423,7 @@ class SelfAttention(nn.Module):
 
     def forward(self, x):
         batch_size, C, width, height = x.size()
-        print(f"SelfAttention input shape: {x.shape}")  # 입력 데이터 shape 출력
+        #print(f"SelfAttention input shape: {x.shape}")  # 입력 데이터 shape 출력
         query = self.query_conv(x).view(batch_size, -1, width * height).permute(0, 2, 1)
         key = self.key_conv(x).view(batch_size, -1, width * height)
         energy = torch.bmm(query, key)
@@ -2371,7 +2432,7 @@ class SelfAttention(nn.Module):
         out = torch.bmm(value, attention.permute(0, 2, 1))
         out = out.view(batch_size, C, width, height)
         out = self.gamma * out + x
-        print(f"SelfAttention output shape: {out.shape}")  # 출력 데이터 shape 출력
+        #print(f"SelfAttention output shape: {out.shape}")  # 출력 데이터 shape 출력
         return out
 
 class CNNLSTMSelfAttentionModel(nn.Module):
@@ -2385,7 +2446,7 @@ class CNNLSTMSelfAttentionModel(nn.Module):
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2)
         )
-        self.self_attention = SelfAttention(128)
+        self.self_attention = SelfAttention(64)
         self.lstm = nn.LSTM(64 * 28 * 28, 128, batch_first=True)
         self.fc = nn.Linear(128, num_classes)
 
@@ -2429,10 +2490,10 @@ for epoch in range(num_epochs):
     start_time = time.time()
     for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
         optimizer.zero_grad()
-        print(f"Batch input shape: {inputs.shape}")  # 배치 입력 데이터 shape 출력
+        #print(f"Batch input shape: {inputs.shape}")  # 배치 입력 데이터 shape 출력
         inputs = inputs.permute(0, 2, 1, 3, 4).to(device)  # [batch_size, frames, channels, height, width] -> [batch_size, channels, frames, height, width]
         labels = labels.to(device)
-        print(f"fixed shape: {inputs.shape}")
+        #print(f"fixed shape: {inputs.shape}")
         outputs = model(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
