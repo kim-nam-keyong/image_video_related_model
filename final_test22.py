@@ -2527,7 +2527,7 @@ test_accuracy = correct / total
 print(f"Test Accuracy: {test_accuracy}")
 
 
-# In[1]:
+# In[ ]:
 
 
 #attention + CNN +LSTM 확인 코드 
@@ -2579,7 +2579,7 @@ class VideoDataset(Dataset):
         return frames, label
 
 
-
+X_video = pd.read_csv("train_video70.csv")
 
 # 데이터프레임 로드
 train_df, test_df = train_test_split(X_video, test_size=0.2, random_state=42)
@@ -2708,6 +2708,35 @@ test_accuracy = correct / total
 print(f"Test Accuracy: {test_accuracy}") 
 
 
+# In[ ]:
+
+
+import os
+import requests
+from notebook import notebookapp
+
+# Jupyter Notebook 서버의 URL 가져오기
+servers = list(notebookapp.list_running_servers())
+if not servers:
+    raise RuntimeError("No running Jupyter Notebook servers found.")
+server_url = servers[0]['url']
+
+# 노트북 파일 경로
+notebook_path = "./final_test22.ipynb"
+
+# 노트북 저장 요청 보내기
+save_url = f"{server_url}api/contents/{notebook_path}"
+response = requests.put(save_url, json={"type": "notebook", "content": None})
+if response.status_code == 200:
+    print("Notebook saved successfully.")
+else:
+    print("Failed to save notebook.")
+    print(response.text)
+
+# 컴퓨터 전원 끄기
+os.system("shutdown /s /t 0")
+
+
 # In[8]:
 
 
@@ -2763,6 +2792,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 import numpy as np
 from tqdm import tqdm  # TQDM 라이브러리 추가
+from sklearn.model_selection import KFold 
+from torch.optim.lr_scheduler import StepLR
 torch.cuda.empty_cache()
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -2791,12 +2822,12 @@ class VideoDataset(Dataset):
         label = torch.tensor(label, dtype=torch.float32)
         return frames, label
 
-X_video = pd.read_csv("train_video70.csv")
+X_video = pd.read_csv("train_video70.csv").sample(500)
 # 데이터프레임 로드
 train_df, test_df = train_test_split(X_video, test_size=0.2, random_state=42)
 
 transform = transforms.Compose([
-    transforms.Resize((112, 112)),  # 입력 이미지 크기를 112x112로 줄임
+    transforms.Resize((224, 224)),  # 입력 이미지 크기를 112x112로 줄임
     transforms.ToTensor()
 ])
 
@@ -2856,12 +2887,34 @@ class CNNTransformer(nn.Module):
         #print(f"After classifier: {x.shape}")
         return x
 
+class EarlyStopping: 
+    def __init__(self, patience=5, verbose=False)
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+    
+    def __call__(self, val_loss, model):
+        score = -val_loss
+        if self.best_score is None:
+            self.best_score = score
+        
+        elif score < self.best_score:
+            self.counter += 1 
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.counter = 0 
+
 # 모델 생성
 model = CNNTransformer(num_classes=6)
 
 # 손실 함수 및 옵티마이저 정의
 criterion = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+scheduler = StepLR(optimizer, step_size=1, gamma=0.01)
 
 # 학습 함수 정의
 def train(model, train_loader, criterion, optimizer, device):
@@ -2908,8 +2961,217 @@ for epoch in range(num_epochs):
     test_loss, test_accuracy = evaluate(model, test_loader, criterion, device)
     print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.4f}")
 
+#Epoch 1/1, Train Loss: 0.4691, Test Loss: 0.4534, Test Accuracy: 0.1713  ??? 이게 맞나 
 
-# In[2]:
+# Epoch 1/1, Train Loss: 0.6061, Test Loss: 0.4976, Test Accuracy: 0.1800  224 , 224 resize 
+
+# 교차검증 진행해보자. early stopping 적용 
+
+
+# In[5]:
+
+
+from PIL import Image
+import warnings
+import pandas as pd 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.transforms as transforms
+import torchvision.models as models
+from torch.utils.data import Dataset, DataLoader
+import h5py
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.metrics import accuracy_score
+import numpy as np
+from tqdm import tqdm  # TQDM 라이브러리 추가
+from torch.optim.lr_scheduler import StepLR
+
+torch.cuda.empty_cache()
+warnings.filterwarnings("ignore", category=FutureWarning)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class VideoDataset(Dataset):
+    def __init__(self, df, transform=None):
+        self.df = df
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        with h5py.File(row['processed_frames'], 'r') as f:
+            frames = f['frames'][:]
+        frames = [frame.transpose(1, 2, 0) for frame in frames]  # (channels, height, width) -> (height, width, channels)
+        frames = [Image.fromarray(frame.astype('uint8')) for frame in frames]  # Convert to PIL.Image
+        if self.transform:
+            frames = [self.transform(frame) for frame in frames]
+        frames = torch.stack(frames)
+        frames = frames.permute(1, 0, 2, 3)  # [frames, channels, height, width] -> [channels, frames, height, width]
+        frames = frames.permute(1, 0, 2, 3)  # [channels, frames, height, width] -> [frames, channels, height, width]
+        label_columns = ['category_name_물건찾기', 'category_name_음주운전', 'category_name_졸음운전', 'category_name_차량제어', 'category_name_통화', 'category_name_휴대폰조작']
+        label = row[label_columns].values.astype(float)
+        label = torch.tensor(label, dtype=torch.float32)
+        return frames, label
+
+X_video = pd.read_csv("train_video70.csv").sample(20)
+# 데이터프레임 로드
+train_df, test_df = train_test_split(X_video, test_size=0.2, random_state=42)
+
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),  # 입력 이미지 크기를 224x224로 조정
+    transforms.ToTensor()
+])
+
+# 데이터셋 및 데이터로더 생성
+train_dataset = VideoDataset(train_df, transform=transform)
+test_dataset = VideoDataset(test_df, transform=transform)
+train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)  # 배치 크기를 2로 설정
+test_loader = DataLoader(test_dataset, batch_size=2, shuffle=False)  # 배치 크기를 2로 설정
+
+class CNNBackbone(nn.Module):
+    def __init__(self):
+        super(CNNBackbone, self).__init__()
+        self.cnn = models.resnet152(pretrained=True)
+        self.cnn.fc = nn.Identity()
+
+    def forward(self, x):
+        x = self.cnn(x)
+        return x
+    
+class TransformerEncoder(nn.Module):
+    def __init__(self, d_model, nhead, num_layers):
+        super(TransformerEncoder, self).__init__()
+        self.transformer_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead)
+        self.transformer_encoder = nn.TransformerEncoder(self.transformer_layer, num_layers=num_layers)
+    
+    def forward(self, x):
+        x = self.transformer_encoder(x)
+        return x 
+    
+class CNNTransformer(nn.Module):
+    def __init__(self, num_classes, d_model=2048, nhead=8, num_layers=6):
+        super(CNNTransformer, self).__init__()
+        self.cnn_backbone = CNNBackbone()
+        self.flatten = nn.Flatten(start_dim=2)  # Flatten the spatial dimensions
+        self.linear_proj = nn.Linear(2048, d_model)  # Adjust based on the output size of CNN
+        self.transformer_encoder = TransformerEncoder(d_model=d_model, nhead=nhead, num_layers=num_layers)
+        self.classifier = nn.Linear(d_model, num_classes)
+
+    def forward(self, x):
+        batch_size, frames, channels, height, width = x.shape
+        x = x.view(batch_size * frames, channels, height, width)  # Reshape to (batch_size * frames, channels, height, width)
+        x = self.cnn_backbone(x)  # [batch_size * frames, 2048, 3, 3]
+        x = x.view(batch_size, frames, -1)  # Reshape to (batch_size, frames, 2048 * 3 * 3)
+        x = self.linear_proj(x)  # [batch_size, frames, d_model]
+        x = x.permute(1, 0, 2)  # [frames, batch_size, d_model]
+        x = self.transformer_encoder(x)  # [frames, batch_size, d_model]
+        x = x.mean(dim=0)  # Global average pooling over the sequence dimension
+        x = self.classifier(x)  # [batch_size, num_classes]
+        return x
+
+# 모델 생성
+model = CNNTransformer(num_classes=6)
+model.to(device)  # 모델을 GPU로 이동
+
+# 손실 함수 및 옵티마이저 정의
+criterion = nn.BCEWithLogitsLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+scheduler = StepLR(optimizer, step_size=10, gamma=0.1)  # 학습률 스케줄러 추가
+
+# 학습 함수 정의
+def train(model, train_loader, criterion, optimizer, device):
+    model.train()
+    running_loss = 0.0
+    scaler = torch.cuda.amp.GradScaler()  # Mixed Precision Training을 위한 GradScaler
+    for inputs, labels in tqdm(train_loader, desc="Training", mininterval=10):  # TQDM을 사용하여 진행 상황 표시, mininterval 설정
+        inputs, labels = inputs.to(device), labels.to(device)  # 입력 데이터를 GPU로 이동
+        optimizer.zero_grad()
+        with torch.cuda.amp.autocast():  # Mixed Precision Training
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        running_loss += loss.item()
+    return running_loss / len(train_loader)
+
+# 평가 함수 정의
+def evaluate(model, test_loader, criterion, device):
+    model.eval()
+    running_loss = 0.0
+    all_labels = []
+    all_preds = []
+    with torch.no_grad():
+        for inputs, labels in tqdm(test_loader, desc="Evaluating", mininterval=50):  # TQDM을 사용하여 진행 상황 표시, mininterval 설정
+            inputs, labels = inputs.to(device), labels.to(device)  # 입력 데이터를 GPU로 이동
+            with torch.cuda.amp.autocast():  # Mixed Precision Training
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+            running_loss += loss.item()
+            preds = torch.sigmoid(outputs).cpu().numpy()
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(preds)
+    accuracy = accuracy_score(np.array(all_labels).argmax(axis=1), np.array(all_preds).argmax(axis=1))
+    return running_loss / len(test_loader), accuracy
+
+# 조기 종료 클래스 정의
+class EarlyStopping:
+    def __init__(self, patience=5, verbose=False):
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+
+    def __call__(self, val_loss, model):
+        score = -val_loss
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.counter = 0
+
+# 교차 검증 및 조기 종료 적용
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+early_stopping = EarlyStopping(patience=5, verbose=True)
+num_epochs = 3
+for fold, (train_idx, val_idx) in enumerate(kf.split(X_video)):
+    print(f"Fold {fold+1}")
+    
+    train_df = X_video.iloc[train_idx]
+    val_df = X_video.iloc[val_idx]
+    
+    train_dataset = VideoDataset(train_df, transform=transform)
+    val_dataset = VideoDataset(val_df, transform=transform)
+    
+    train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=2, shuffle=False)
+    
+    for epoch in range(num_epochs):
+        train_loss = train(model, train_loader, criterion, optimizer, device)
+        val_loss, val_accuracy = evaluate(model, val_loader, criterion, device)
+        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+        
+        scheduler.step()  # 학습률 스케줄러 업데이트
+        
+        early_stopping(val_loss, model)
+        if early_stopping.early_stop:
+            print("Early stopping")
+            break
+
+# pretrained =True 로 불러오면 resnet모델의 가중치가 기본적으로 float32로 되어있고 , autocast에서 이 부분을 처리하지 못한다. 
+# autocast를 통해서 halftensor로 변환된 입력을 받아야한다. 
+# 사실 그럴 필요가 없이 , autocast는 자동으로 데이터 타입을 관리해주기에 , 모델의 가중치나 입력데이터를 수동으로 half로 할 필요가 없다. 
+# 
+
+
+# In[13]:
 
 
 torch.cuda.empty_cache()
